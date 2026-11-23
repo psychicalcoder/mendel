@@ -177,6 +177,133 @@ chromosome 5   # roots: a stout taproot with spreading laterals
 `;
 
 // A sunflower-like composite: one tall leafy stalk whose head nods under a ring of rays.
+// A shade tree whose crown is grown by space colonization: the bole is scripted, then every
+// bud steers toward the free space in an ellipsoidal crown and competes with its neighbours
+// for it. Laterals wake only where there is room; buds left without space set leaves and nuts.
+export const ELMSHADE = `plant "Elmshade"
+axiom A
+root R
+
+chromosome 1
+  rule BLOOM @5 : 0/0
+  rule APEX @20 : Et/Et   # the bole
+    Et = A when step < $BOLE -> F(0.3) !(0.98) ~(1) A
+  rule SEEK @40 : Es/Es   # a bud with space grows toward it and leaves a lateral behind
+    Es = A when space > 0 and step < $SEASON -> >(0.5) F($INTERNODE) !(0.97) ~(4) [ &(65) @leaf(0.55) ] [ &(50) B ] /(137.5) A
+  rule WAKE @45 : Ew/Ew   # a dormant lateral wakes only where it has room
+    Ew = B when space >= $ROOM and step < $SEASON -> /(90) A
+  rule SPUR @48 : Ep/Ep   # one left waiting too long, or when the season ends, becomes a leafy spur
+    Ep = B when age >= $DORMANCY or step >= $SEASON -> F(0.08) @leaf(0.7)
+  rule FRUITING @50 : En/0   # an apex out of space, or out of season, sets leaves and a nut
+    En dom 2 = A when space == 0 or step >= $SEASON -> F(0.1) @leaf(0.9) [ &(70) @fruit(1.3) ]
+  rule SEEDHEAD @55 : 0/0
+  num ANGLE @60 : ae/ae
+    ae = 35
+  num PHYLLO @70 : ge/ge
+    ge = 137.5
+  num INTERNODE @85 : ie/ie
+    ie = 0.22
+  num ROOM @90 : we/we
+    we = 2
+  num DORMANCY @92 : de/de   # steps a lateral waits for room before giving up
+    de = 6
+  num BOLE @94 : be/be   # steps spent on the trunk
+    be = 9
+  num SEASON @95 : sne/sne   # shoots stop extending in time for the last leaves to expand
+    sne = $STEPS - $MATURE
+
+chromosome 6   # the clock and the crown
+  num STEPS @2 : ste/ste
+    ste = 36
+  num ELONGATE @4 : ele/ele
+    ele = 4
+  num MATURE @6 : mae/mae
+    mae = 6
+  num THICKEN @7 : the/the
+    the = 0.05
+  num THICKEN_MAX @8 : tme/tme
+    tme = 1.2
+  num CROWN_PTS @10 : cpe/cpe
+    cpe = 3000
+  num CROWN_R @20 : cre/cre
+    cre = 3
+  num CROWN_H @30 : che/che
+    che = 4.6
+  num CROWN_BASE @40 : cbe/cbe
+    cbe = 2.6
+  num REACH @50 : rce/rce
+    rce = 1.5
+  num KILL @60 : kle/kle
+    kle = 0.35
+  num CONE @70 : coe/coe
+    coe = 80
+
+chromosome 2
+  organ leaf @10 : Ro/Ro   # a rosette at each twig end
+    Ro = spiral(leaflet, n=7, height=0.25, tilt=65, shrink=0.96)   # a leafy spray at each twig end
+  organ leaflet @20 : Lo/Lo
+    Lo = blade(sf(m=2, n1=0.7, n2=1, n3=1), length=0.28, width=0.14, curl=-0.12, fold=0.15, stalk=0.03,
+               color=hsl($LEAF_HUE, 0.5, 0.38))
+  organ flower @50 : 0/0
+  num PIGMENT @55 : Po/Po
+    Po = 0.5
+  num PETAL_HUE @58 : vo/vo
+    vo = 0.1
+  organ petal @60 : 0/0
+  num PETALS @65 : fo/fo
+    fo = 0
+  organ fruit @80 : Nu/Nu
+    Nu = group(bulb(length=0.07, radius=0.03, point=0.8, color=hsl(0.09, 0.55, 0.38)),
+               bulb(length=0.03, radius=0.035, point=0.5, color=hsl(0.08, 0.3, 0.3)))
+
+chromosome 3
+  num TROPISM @10 : to/to
+    to = 0.1
+  num STEM_W @30 : swo/swo
+    swo = 0.2
+  num RESERVE @20 : ro/ro
+    ro = 12
+  num ALLOC @40 : alo/alo
+    alo = 0.5
+  num SHADE_TOL @50 : sto/sto
+    sto = 0.4
+  num APICAL @70 : apo/apo
+    apo = 0.6
+  num BLOOM_AGE @60 : eo/eo
+    eo = 99
+  num TAPER @80 : ko/ko
+    ko = 0.6
+  num LEAF_HUE @90 : ho/ho
+    ho = 0.28
+
+chromosome 4   # temperature tolerance: temperate, frost-hardy
+  num T_OPT @10 : co/co
+    co = 17
+  num T_WIDTH @30 : no/no
+    no = 13
+  num T_LETHAL_LO @55 : lo/lo
+    lo = -20
+  num T_LETHAL_HI @80 : so/so
+    so = 38
+
+chromosome 5   # roots: a stout taproot with spreading laterals
+  rule ROOT_APEX @10 : Ro/Ro
+    Ro = R when depth < $ROOT_DEPTH -> F(0.27) [ &(70) Q ] /(120) [ &(70) Q ] /(120) [ &(70) Q ] R
+  rule ROOT_LATERAL @30 : Lo/Lo
+    Lo = Q when x < 4 -> F(0.22) ~(15) [ &(40) @rootlet ] [ ^(35) Q(x + 2) ] Q(x + 1)
+  organ rootlet @50 : ro/ro
+    ro = rootlet(length=0.14, radius=0.007, hairs=2)
+  num ROOT_DEPTH @60 : do/do
+    do = 1.6
+  num ROOT_ALLOC @70 : af/af
+    af = 0.35
+  num ROOT_W @80 : rw/rw   # roots as stout as the bole they hold up
+    rw = 0.045
+  num ROOT_GRAV @85 : gr/gr
+    gr = 0.2
+`;
+
+// A sunflower-like composite: one tall leafy stalk whose head nods under a ring of rays.
 export const SUNRAY = `plant "Sunray"
 axiom A
 root R
@@ -616,4 +743,4 @@ chromosome 5   # roots: a taproot with wide laterals
     gm = 0.3
 `;
 
-export const STARTERS = [FERNWORT, OAKHART, SUNRAY, VINEWOOD, CANEBRAKE, PILLARSPINE, SWEETRIND];
+export const STARTERS = [FERNWORT, OAKHART, SUNRAY, VINEWOOD, CANEBRAKE, PILLARSPINE, SWEETRIND, ELMSHADE];

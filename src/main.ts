@@ -1,5 +1,5 @@
 // Plate viewer: a PODL genome grown and drawn as a hand-coloured botanical plate.
-// Keys 1–7 (or ?plant=N) pick the starter, R regrows with a new seed, T toggles the roots.
+// Keys 1–8 (or ?plant=N) pick the starter, R regrows with a new seed, T toggles the roots.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { develop, parseGenome, plantMesh, STARTERS } from './podl';
@@ -46,6 +46,10 @@ scene.add(ground.group);
 plate.setCrownShade(ground.shade);
 
 const genomes = STARTERS.map(s => parseGenome(s));
+const roman = (n: number) => [[10, 'X'], [9, 'IX'], [5, 'V'], [4, 'IV'], [1, 'I']].reduce((out, [v, r]) => {
+  for (; n >= +v; n -= +v) out += r;
+  return out;
+}, '');
 let mesh: THREE.Group | null = null;
 let rootMesh: THREE.Mesh | null = null;
 let current = 0, seed = 1, showRoots = false;
@@ -83,7 +87,7 @@ function show(i: number) {
   const flat = size.y < 0.3 * Math.max(size.x, size.z);
   camera.position.copy(mid).add(new THREE.Vector3(0.55, flat ? 0.5 : 0.14, 1).normalize().multiplyScalar((flat ? 0.8 : 1) * r / Math.tan((camera.fov * Math.PI) / 360)));
   setRoots(showRoots); // also redraws
-  caption.textContent = `Tab. ${['I', 'II', 'III', 'IV', 'V', 'VI', 'VII'][i] ?? i + 1}.  ${genomes[i].name}`;
+  caption.textContent = `Tab. ${roman(i + 1)}.  ${genomes[i].name}`;
 }
 
 // Keep the sun's shadow camera on the plant, sized to the view.
@@ -122,6 +126,6 @@ window.addEventListener('keydown', (e) => {
 });
 
 resize();
-// ?plant=1..7 picks the starter shown first (handy for screenshots)
+// ?plant=1..8 picks the starter shown first (handy for screenshots)
 show(Math.max(0, Math.min(genomes.length - 1, (Number(new URLSearchParams(location.search).get('plant')) || 1) - 1)));
 tick();

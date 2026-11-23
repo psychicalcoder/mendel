@@ -134,8 +134,8 @@ export function printRule(r: Rule): string {
   return `${r.pred}${r.cond ? ' when ' + printExpr(r.cond) : ''} -> ${printSuccessor(r.succ)}`;
 }
 
-// Successor symbols: A–Z modules (F = internode), turtle ops + - & ^ / \ ! ~, brackets, @organ.
-export const TURTLE = '+-&^/\\!~';
+// Successor symbols: A–Z modules (F = internode), turtle ops + - & ^ / \ ! ~ >, brackets, @organ.
+export const TURTLE = '+-&^/\\!~>';
 export function parseSuccessor(s: string): Tok[] {
   const out: Tok[] = [];
   let i = 0;
@@ -190,6 +190,10 @@ export const GENE_DEFAULTS: Record<string, number> = {
   ANGLE: 30, PHYLLO: 137.5, INTERNODE: 0.5, STEM_W: 0.05, TROPISM: 0.15, TAPER: 0.7,
   // roots: starting thickness, pull toward gravity, how deep the starters' root rules grow
   ROOT_W: 0.012, ROOT_GRAV: 0.25, ROOT_DEPTH: 0.5,
+  // space colonization: an ellipsoidal crown of attraction points (none unless CROWN_PTS > 0)
+  // the developmental clock: how many steps the plant develops and how fast its parts mature, in steps
+  STEPS: 12, ELONGATE: 0.55 / 0.3, MATURE: 3, THICKEN: 0.12, THICKEN_MAX: 1.5,
+  CROWN_PTS: 0, CROWN_R: 2, CROWN_H: 3, CROWN_BASE: 1, REACH: 2, KILL: 0.4, CONE: 90,
 };
 
 export interface ExpressedRule { gene: string; pred: string; progs: Rule[] }

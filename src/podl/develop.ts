@@ -4,16 +4,19 @@
 // This is a pure morphological derivation: every bud with a matching rule is rewritten each
 // step. (Viridarium runs the same derivation under an energy/water budget; that physiology is
 // not part of this package.) Rule conditions and arguments can read:
-//   age, order, step, x (the module's own argument), depth (below ground, m)
+//   age, order, step, x (the module's own argument), depth (below ground, m),
+//   space (attraction points this bud won in the crown; see colonize)
 import { evalExpr } from './expr';
 import { express, parseSuccessor, GENE_DEFAULTS, type Expressed, type Genome, type Rule, type Tok, type ExpressedRule } from './genome';
 import { evalOrgan, buildOrgan, organInfo, type Gene, type Mesh, type OrganInfo, type Vec3 } from './organs';
 import { mulberry32, type Rand } from './rng';
 
-export const MAX_MODULES = 9000;
+export const MAX_MODULES = 30000;
+export const MAX_STEPS = 200;
 
 // A module in the derivation string: turtle symbol, growing module (capital), organ (@) or bracket.
-export interface Module { s: string; organ?: string; age: number; order: number; j: number; j2: number; val?: number }
+// `dir` is set on `>`: the world direction toward the free space its parent bud saw.
+export interface Module { s: string; organ?: string; age: number; order: number; j: number; j2: number; val?: number; dir?: Vec3 }
 export interface Segment { p0: Vec3; p1: Vec3; r0: number; r1: number; order: number; i: number }
 export interface OrganPlacement { name: string; p: Vec3; H: Vec3; L: Vec3; U: Vec3; s: number; order: number; age: number; i: number }
 export interface Template { mesh: Mesh; info: OrganInfo }
@@ -52,6 +55,49 @@ function rot(v: Vec3, axis: Vec3, ang: number): Vec3 { // Rodrigues
   return add(add(scale(v, c), scale(cross(k, v), s)), scale(k, dot(k, v) * (1 - c)));
 }
 const DEG = Math.PI / 180;
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+const dist2 = (a: Vec3, b: Vec3) => (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2;
+
+// Space colonization (Runions et al. 2007). The crown is an ellipsoid of attraction points:
+// CROWN_PTS points, CROWN_R wide, CROWN_H tall, starting CROWN_BASE above the ground. Each step,
+// points within KILL of the shoot are used up; every other point within REACH goes to the
+// nearest bud whose heading is within CONE degrees of it. A bud's `space` is how many points it
+// won and `dir` the mean direction to them. Buds are the shoot's capital modules other than F.
+export function crownPoints(gene: Gene, seed: number): Vec3[] {
+  const n = Math.min(Math.max(0, Math.floor(gene('CROWN_PTS'))), 5000);
+  const r = Math.max(0.01, gene('CROWN_R')), h = Math.max(0.01, gene('CROWN_H')) / 2, y0 = gene('CROWN_BASE') + h;
+  const rand = mulberry32(seed ^ 0x5eed5c), pts: Vec3[] = [];
+  for (let tries = 0; pts.length < n && tries < n * 4; tries++) {
+    const x = rand() * 2 - 1, y = rand() * 2 - 1, z = rand() * 2 - 1;
+    if (x * x + y * y + z * z <= 1) pts.push([x * r, y0 + y * h, z * r]);
+  }
+  return pts;
+}
+
+export interface Colonization { space: number[]; dir: (Vec3 | undefined)[]; points: Vec3[] }
+export function colonize(mods: Module[], sk: Skeleton, points: Vec3[], gene: Gene): Colonization {
+  const reach2 = gene('REACH') ** 2, kill2 = gene('KILL') ** 2, cosCone = Math.cos(clamp01(gene('CONE') / 180) * Math.PI);
+  const nodes = sk.segments.map(s => s.p1);
+  const buds: number[] = [];
+  for (let i = 0; i < mods.length; i++) if (/[A-EG-Z]/.test(mods[i].s)) { buds.push(i); nodes.push(sk.at[i].p); }
+  const left = points.filter(q => !nodes.some(p => dist2(p, q) < kill2));
+  const space = new Array<number>(mods.length).fill(0);
+  const sum: (Vec3 | undefined)[] = new Array(mods.length);
+  for (const q of left) {
+    let best = -1, bd = reach2;
+    for (const i of buds) {
+      const { p, H } = sk.at[i], d = dist2(p, q);
+      if (d >= bd || d < 1e-12) continue;
+      if (dot(H, [q[0] - p[0], q[1] - p[1], q[2] - p[2]]) < cosCone * Math.sqrt(d)) continue;
+      best = i; bd = d;
+    }
+    if (best < 0) continue;
+    const p = sk.at[best].p, v = norm([q[0] - p[0], q[1] - p[1], q[2] - p[2]]);
+    space[best]++;
+    sum[best] = sum[best] ? add(sum[best]!, v) : v;
+  }
+  return { space, dir: sum.map(v => v && len(v) > 1e-6 ? norm(v) : undefined), points: left };
+}
 
 interface TurtleState { p: Vec3; H: Vec3; L: Vec3; U: Vec3; w: number }
 
@@ -73,10 +119,14 @@ export const rootFrame = (gene: Gene): Frame => ({
 //   [ ]   push / pop (branches taper by $TAPER)   @organ(s)  place an organ at scale s
 export function interpret(mods: Module[], frame: Frame, gene: Gene) {
   const segments: Segment[] = [], organs: OrganPlacement[] = [], stack: TurtleState[] = [];
-  const at: { p: Vec3; w: number }[] = new Array(mods.length);
+  const at: { p: Vec3; H: Vec3; w: number }[] = new Array(mods.length);
   const { tropTarget, tropism } = frame;
   const angle = gene('ANGLE'), phyllo = gene('PHYLLO'), inter = gene('INTERNODE');
   const taper = gene('TAPER');
+  // maturation: internodes start at 45% and reach full length after ELONGATE steps, organs reach
+  // full size after MATURE steps, wood thickens by THICKEN per step up to 1 + THICKEN_MAX times
+  const elong = 0.55 / Math.max(1e-3, gene('ELONGATE')), mature = Math.max(1e-3, gene('MATURE'));
+  const thicken = Math.max(0, gene('THICKEN')), thickMax = Math.max(0, gene('THICKEN_MAX'));
   let st: TurtleState = { p: [0, 0, 0], H: frame.H, L: frame.L, U: frame.U, w: frame.w };
   const turn = (axisKey: 'H' | 'L' | 'U', a: number) => {
     const ax = st[axisKey];
@@ -84,13 +134,13 @@ export function interpret(mods: Module[], frame: Frame, gene: Gene) {
   };
   for (let i = 0; i < mods.length; i++) {
     const m = mods[i];
-    at[i] = { p: st.p, w: st.w };
+    at[i] = { p: st.p, H: st.H, w: st.w };
     switch (m.s) {
       case 'F': {
-        const grow = Math.min(1, 0.45 + 0.3 * m.age);
+        const grow = Math.min(1, 0.45 + elong * m.age);
         const l = Math.max(0, (m.val ?? inter) * grow);
         if (l <= 0) break;
-        const w0 = st.w * (1 + Math.min(0.12 * m.age, 1.5));
+        const w0 = st.w * (1 + Math.min(thicken * m.age, thickMax));
         const p1 = add(st.p, scale(st.H, l));
         segments.push({ p0: st.p, p1, r0: w0, r1: w0 * 0.93, order: m.order, i });
         st.p = p1;
@@ -110,11 +160,20 @@ export function interpret(mods: Module[], frame: Frame, gene: Gene) {
       case '/': turn('H', m.val ?? phyllo); break;
       case '\\': turn('H', -(m.val ?? phyllo)); break;
       case '!': st.w *= m.val ?? 0.8; break;
+      case '>': { // turn the heading toward the free space by a fraction w (1 = straight at it)
+        if (!m.dir) break;
+        const ax = cross(st.H, m.dir), s = len(ax);
+        const a = Math.atan2(s, dot(st.H, m.dir)) * clamp01(m.val ?? 1);
+        if (s < 1e-6 || a < 1e-6) break;
+        const k = scale(ax, 1 / s);
+        st.H = norm(rot(st.H, k, a)); st.L = norm(rot(st.L, k, a)); st.U = norm(rot(st.U, k, a));
+        break;
+      }
       case '~': { const a = (m.val ?? 12) * (m.j * 2 - 1); turn(m.j2 < 0.5 ? 'L' : 'U', a); break; }
       case '[': stack.push(st); st = { ...st, w: st.w * taper }; break;
       case ']': if (stack.length) st = stack.pop()!; break;
       case '@': {
-        const grow = Math.min(1, (m.age + 1) / 3);
+        const grow = Math.min(1, (m.age + 1) / mature);
         organs.push({ name: m.organ!, p: st.p, H: st.H, L: st.L, U: st.U, s: (m.val ?? 1) * grow, order: m.order, age: m.age, i });
         break;
       }
@@ -127,17 +186,19 @@ export function interpret(mods: Module[], frame: Frame, gene: Gene) {
 export type Skeleton = ReturnType<typeof interpret>;
 
 export interface DevelopOptions {
-  steps?: number;      // derivation steps (default 12, one viridarium season)
+  steps?: number;      // derivation steps; overrides the genome's $STEPS
+  maxSteps?: number;   // upper limit on $STEPS set by the host (default MAX_STEPS)
   seed?: number;       // all randomness (jitter, rand(), codominant mosaics) flows from this
   lean?: Vec3;         // direction the shoot's tropism leans toward, added to straight up
   maxModules?: number; // stop deriving once the module strings grow past this
 }
 
 export function develop(genome: Genome, opts: DevelopOptions = {}) {
-  const { steps = 12, seed = 1, lean, maxModules = MAX_MODULES } = opts;
+  const { seed = 1, lean, maxSteps = MAX_STEPS, maxModules = MAX_MODULES } = opts;
   const ph = express(genome);
   const rand = mulberry32(seed);
   const gene = makeGeneReader(ph, rand);
+  const steps = opts.steps ?? Math.max(0, Math.min(maxSteps, Math.round(gene('STEPS'))));
   const shootF = shootFrame(gene, lean), rootF = rootFrame(gene);
 
   const templates: Record<string, Template | null> = {};
@@ -150,22 +211,24 @@ export function develop(genome: Genome, opts: DevelopOptions = {}) {
     return templates[name];
   };
 
-  const mk = (tok: Tok, order: number, parentVars: Record<string, number>): Module => {
+  const mk = (tok: Tok, order: number, parentVars: Record<string, number>, dir?: Vec3): Module => {
     const m: Module = { s: tok.s, organ: tok.organ, age: 0, order, j: rand(), j2: rand() };
+    if (tok.s === '>') m.dir = dir;
     if (tok.arg) { try { m.val = evalExpr(tok.arg, { gene, rand, vars: parentVars }) as number; } catch { m.val = 0; } }
     return m;
   };
-  const expand = (succ: Tok[], order: number, mv: Record<string, number>) => {
+  const expand = (succ: Tok[], order: number, mv: Record<string, number>, dir?: Vec3) => {
     const out: Module[] = [];
     let d = 0;
     for (const t of succ) {
       if (t.s === '[') d++;
-      out.push(mk(t, order + d, mv));
+      out.push(mk(t, order + d, mv, dir));
       if (t.s === ']') d--;
     }
     return out;
   };
-  const vars0 = { age: 0, order: 0, step: 0, x: 0, depth: 0 };
+  const vars0 = { age: 0, order: 0, step: 0, x: 0, depth: 0, space: 0 };
+  let points = crownPoints(gene, seed);
   let mods = expand(parseSuccessor(genome.axiom), 0, vars0);
   let rmods = genome.rootAxiom ? expand(parseSuccessor(genome.rootAxiom), 0, vars0) : [];
 
@@ -185,13 +248,13 @@ export function develop(genome: Genome, opts: DevelopOptions = {}) {
   };
 
   // One derivation step: rewrite every bud that has a matching rule, age everything else.
-  const derive = (ms: Module[], sk: Skeleton, step: number) => {
+  const derive = (ms: Module[], sk: Skeleton, step: number, col?: Colonization) => {
     const next: Module[] = [];
     for (let i = 0; i < ms.length; i++) {
       const m = ms[i];
-      const mv = { age: m.age, order: m.order, step, x: m.val ?? 0, depth: -sk.at[i].p[1] };
+      const mv = { age: m.age, order: m.order, step, x: m.val ?? 0, depth: -sk.at[i].p[1], space: col?.space[i] ?? 0 };
       const prog = /[A-Z]/.test(m.s) && byPred[m.s] ? pickRule(m, mv) : null;
-      if (prog) { next.push(...expand(prog.succ, m.order, mv)); }
+      if (prog) { next.push(...expand(prog.succ, m.order, mv, col?.dir[i])); }
       else { m.age++; next.push(m); }
     }
     return next;
@@ -199,7 +262,10 @@ export function develop(genome: Genome, opts: DevelopOptions = {}) {
 
   let truncated = false, stepsRun = 0;
   for (let step = 0; step < steps; step++) {
-    const shoot = derive(mods, interpret(mods, shootF, gene), step);
+    const sk = interpret(mods, shootF, gene);
+    let col: Colonization | undefined;
+    if (points.length) { col = colonize(mods, sk, points, gene); points = col.points; }
+    const shoot = derive(mods, sk, step, col);
     const root = derive(rmods, interpret(rmods, rootF, gene), step);
     mods = shoot; rmods = root; stepsRun = step + 1;
     if (mods.length + rmods.length > maxModules) { truncated = true; break; }
@@ -209,7 +275,7 @@ export function develop(genome: Genome, opts: DevelopOptions = {}) {
   const roots = interpret(rmods, rootF, gene);
   // make sure every placed organ has a template
   for (const o of [...skel.organs, ...roots.organs]) tpl(o.name);
-  return { ph, gene, ...skel, roots, templates, modules: mods, rootModules: rmods, steps: stepsRun, truncated };
+  return { ph, gene, ...skel, roots, crown: points, templates, modules: mods, rootModules: rmods, steps: stepsRun, truncated };
 }
 
 export type Development = ReturnType<typeof develop>;

@@ -3,8 +3,6 @@
 import type { Development, Segment, OrganPlacement } from './develop';
 import { applyMat, type Mat, type Mesh } from './organs';
 
-export const MAX_TRIS = 250000;
-
 const emptyMesh = (): Mesh => ({ pos: [], nrm: [], col: [], idx: [] });
 
 function pushInto(out: Mesh, m: Mesh, mat: Mat) {
@@ -40,7 +38,6 @@ function instance(out: Mesh, organs: OrganPlacement[], dev: Development, counts:
     counts[o.name] = (counts[o.name] || 0) + 1;
     const s = o.s;
     pushInto(out, t, [o.L[0] * s, o.H[0] * s, o.U[0] * s, o.p[0], o.L[1] * s, o.H[1] * s, o.U[1] * s, o.p[1], o.L[2] * s, o.H[2] * s, o.U[2] * s, o.p[2]]);
-    if (out.idx.length > 3 * MAX_TRIS) break;
   }
 }
 

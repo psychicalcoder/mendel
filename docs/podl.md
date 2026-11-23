@@ -150,6 +150,18 @@ The turtle reads these genes. Their defaults are:
 | `ROOT_W` | 0.012 | Starting root width. |
 | `ROOT_GRAV` | 0.25 | How strongly roots bend toward gravity. |
 | `ROOT_DEPTH` | 0.5 | Conventional depth limit, read by the starters' root rules. |
+| `STEPS` | 12 | How many derivation steps the plant develops (§6.1). |
+| `ELONGATE` | 0.55 / 0.3 ≈ 1.83 | Steps an internode takes to grow from 45 % to full length. |
+| `MATURE` | 3 | Steps an organ takes to reach full size. |
+| `THICKEN` | 0.12 | How much an internode's base thickens per step. |
+| `THICKEN_MAX` | 1.5 | Limit on that thickening: at most `1 + THICKEN_MAX` times the width. |
+| `CROWN_PTS` | 0 | Attraction points in the crown (§6.5). 0 means no crown. At most 5000. |
+| `CROWN_R` | 2 | Crown radius. |
+| `CROWN_H` | 3 | Crown height. |
+| `CROWN_BASE` | 1 | Height of the crown's lowest point above the ground. |
+| `REACH` | 2 | How far a bud can sense an attraction point. |
+| `KILL` | 0.4 | Points this close to the shoot are used up. |
+| `CONE` | 90 | Half-angle, in degrees, of the cone in front of a bud in which it senses points. |
 
 Every other name is free. Genomes may define genes for their own use (`BLOOM_AGE`, `PETALS`) or for a host simulation (`RESERVE`, `T_OPT`, …). The PODL package itself ignores those.
 
@@ -162,7 +174,7 @@ COND      := expr
 SUCCESSOR := symbol*
 symbol    := ( MODULE | TURTLE | '@' ORGAN ) [ '(' expr ')' ] | '[' | ']'
 MODULE    := A–Z
-TURTLE    := + - & ^ / \ ! ~
+TURTLE    := + - & ^ / \ ! ~ >
 ORGAN     := [a-z_][a-z0-9_]*
 ```
 
@@ -181,6 +193,7 @@ ORGAN     := [a-z_][a-z0-9_]*
 | `/` / `\` | degrees (`$PHYLLO`) | Rolls (about the heading axis H). |
 | `!` | factor (0.8) | Multiplies the current width. |
 | `~` | degrees (12) | Applies a random pitch or yaw of up to ± the argument. |
+| `>` | weight (1) | Turns toward the free space the rewritten bud sensed (§6.5), by that fraction of the angle. Does nothing if it sensed none. |
 | `[` / `]` | — | Pushes / pops the turtle state. A new branch starts at width × `$TAPER`. |
 | `@organ` | scale (1) | Places an organ. |
 
@@ -190,7 +203,7 @@ Other capital letters are **modules**. They draw nothing, but rules can rewrite 
 
 ### 6.1 Derivation
 
-The plant develops in discrete **steps** (12 by default). The shoot and the root system each hold a module string. They develop side by side, and both use the same set of rules.
+The plant develops in discrete **steps**. The genome sets how many with `$STEPS` (12 by default). A step has no fixed meaning in time: an ephemeral herb might develop in 8 steps and a fine-grained tree in 60, with `ELONGATE`, `MATURE` and `THICKEN` set to match. The host may cap `$STEPS` (200 by default) or override it. The shoot and the root system each hold a module string. They develop side by side, and both use the same set of rules.
 
 In each step, every module is processed in parallel:
 
@@ -199,7 +212,7 @@ In each step, every module is processed in parallel:
 
 New modules start at age 0. Symbol arguments are evaluated once, when the module is created, using the context of the module that was rewritten. This is why `Q(x + 1)` counts upward.
 
-Derivation stops early, and the result is flagged as `truncated`, once the shoot and root strings together hold more than 9000 modules.
+Derivation stops early, and the result is flagged as `truncated`, once the shoot and root strings together hold more than 30 000 modules.
 
 ### 6.2 Context variables
 
@@ -212,6 +225,7 @@ These variables are available in rule conditions and successor arguments:
 | `step` | The current derivation step, counting from 0. |
 | `x` | The module's own argument, or 0. |
 | `depth` | How far the module sits below the ground, in metres (negative above ground). |
+| `space` | How many crown attraction points the module won this step (§6.5). Always 0 in the root system. |
 
 ### 6.3 Rule selection
 
@@ -227,11 +241,33 @@ After each step, and once more at the end, a turtle walks each string:
 
 - The **shoot** starts at the origin heading up (+Y). Tropism bends it toward the vertical, or toward a `lean` direction supplied by the host.
 - The **root** starts heading down. Gravitropism (`$ROOT_GRAV`) bends it toward −Y.
-- An internode grows with its age. Its length is multiplied by `min(1, 0.45 + 0.3·age)`. Its base thickens by up to 2.5× as it ages.
+- An internode grows with its age. Its length is multiplied by `min(1, 0.45 + 0.55·age / $ELONGATE)`. Its base thickens by `$THICKEN` per step, up to `1 + $THICKEN_MAX` times.
 - Width shrinks slightly along each internode.
-- An organ grows to full size over its first three steps (`(age+1)/3`).
+- An organ grows to full size over its first `$MATURE` steps (`(age+1) / $MATURE`).
 
 The output is a list of stem segments and organ placements. Each organ placement carries the turtle frame (H, L, U).
+
+### 6.5 Space colonization
+
+A genome with `$CROWN_PTS > 0` grows into a crown (after Runions et al., 2007). Before the first step, that many attraction points are scattered uniformly in an ellipsoid `$CROWN_R` wide and `$CROWN_H` tall whose lowest point is `$CROWN_BASE` above the ground. The points come from their own generator seeded from the plant's seed, so a genome without a crown develops exactly as it would otherwise.
+
+At each step, after the shoot is interpreted and before it is rewritten:
+
+1. Every point within `$KILL` of a segment end or a bud is used up for good.
+2. Each remaining point goes to the nearest **bud** within `$REACH` whose heading is within `$CONE` degrees of it. A bud is any shoot module that is a capital letter other than `F`.
+3. A bud's `space` is the number of points it won. Its direction is the mean of the unit vectors toward them.
+
+When a bud is rewritten, every `>` in its successor stores that direction. Buds compete: a point goes to only one bud, so crowded buds starve and buds facing open space thrive. Rules decide what to do about it:
+
+```
+A when space > 0  -> >(0.7) F [ &(50) B ] /(137.5) A    # grow toward the space, leave a lateral
+B when space >= 2 -> A                                   # a lateral wakes only where there is room
+A when space == 0 -> @leaf                               # a starved apex stops
+```
+
+Tropism still applies after `>`. The points left over are returned as `crown`.
+
+A crown that still has points keeps its buds extending to the last step, and organs need `$MATURE` steps to reach full size (§6.4). So a tree whose leaves sit at its tips should stop extending a few steps before the end. Elmshade does this with a `step < $SEASON` condition, where `SEASON = $STEPS - $MATURE`.
 
 ## 7. Organ programs
 
@@ -315,7 +351,7 @@ If an organ yields no geometry, its placements are skipped.
 
 ## 8. Determinism
 
-All randomness comes from a single seeded generator (`develop(genome, { seed })`). This covers `rand()`, `~` jitter and mosaic rule choices. The same genome, seed and options always produce the same plant.
+All randomness comes from a single seeded generator (`develop(genome, { seed })`). This covers `rand()`, `~` jitter, mosaic rule choices and crown points. The same genome, seed and options always produce the same plant.
 
 ## 9. Canonical form
 
